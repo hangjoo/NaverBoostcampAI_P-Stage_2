@@ -105,26 +105,35 @@ class ClassifierModel(nn.Module):
         self.model_type = model_type
         # backbone.
         self.backbone = getattr(import_module("transformers"), model_type + "Model").from_pretrained(model_name)
-        # batchnorm.
-        self.bn = nn.BatchNorm1d(model_config.hidden_size)
-        # dropout.
+        # flatten
+        self.flatten = nn.Flatten(0, -1)
+        # avg pooling
+        self.adaptive_avg_pooling = nn.AdaptiveAvgPool2d((1, model_config.hidden_size))
+        # dropout
         self.dropout = nn.Dropout(p=dropout_rate) if dropout_rate else None
         # classifier.
-        self.classifier = nn.Linear(model_config.hidden_size, class_num)
+        self.classifier = nn.Linear(model_config.hidden_size * 3, class_num)
 
-    def forward(self, *args, **kwargs):
-        outputs = self.backbone(*args, **kwargs)
+    def forward(self, e_token_ids, **kwargs):
+        e1_token_ids = e_token_ids["e1_token_ids"]
+        e2_token_ids = e_token_ids["e2_token_ids"]
 
-        if self.model_type == "Bert":
-            cls_logits = outputs.pooler_output
-        elif self.model_type == "Electra":
-            cls_logits = outputs.last_hidden_state[:, 0, :]
+        if e1_token_ids is None or e2_token_ids is None:
+            raise Exception("ERROR! Model must be feed e1_token_ids, e2_token_ids")
 
-        cls_logits = self.bn(cls_logits)
+        outputs = self.backbone(**kwargs).last_hidden_state  # (batch_size, max_len, hidden_size)
+
+        e_outputs = []
+        for output, e1_idx, e2_idx in zip(outputs, e1_token_ids, e2_token_ids):
+            cls_output = self.adaptive_avg_pooling(output[[0], :].unsqueeze(dim=0))
+            e1_output = self.adaptive_avg_pooling(output[e1_idx, :].unsqueeze(dim=0))
+            e2_output = self.adaptive_avg_pooling(output[e2_idx, :].unsqueeze(dim=0))
+            e_outputs.append(torch.cat((cls_output, e1_output, e2_output), dim=-1).squeeze())
+        e_outputs = torch.stack(e_outputs)  # (batch_size, hidden_size * 3)
 
         if self.dropout:
-            cls_logits = self.dropout(cls_logits)
+            e_outputs = self.dropout(e_outputs)
 
-        out = self.classifier(cls_logits)
+        out = self.classifier(e_outputs)
 
         return out

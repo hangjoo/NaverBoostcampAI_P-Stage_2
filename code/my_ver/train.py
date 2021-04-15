@@ -13,7 +13,7 @@ from transformers.optimization import get_cosine_schedule_with_warmup
 import neptune.new as neptune
 import neptune_config
 from dataset import BaseDataset
-from creators import create_criterion, create_optimizer, ClassifierModel
+from creators import create_model, create_criterion, create_optimizer, ClassifierModel
 from utils import fix_random_seed
 
 device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
@@ -37,7 +37,7 @@ def train():
             "CRITERION_NAME": "LabelSmoothingLoss",
             "CRITERION_PARAMS": {},
 
-            "OPTIMIZER_NAME": "MADGRAD",
+            "OPTIMIZER_NAME": "AdamW",
             "OPTIMIZER_PARAMS": {},
 
             "SCHEDULER_NAME": "cosine_schedule_with_warmup",
@@ -52,18 +52,18 @@ def train():
         for k, v in c_v.items():
             print(f"[SESSION LOG]\t {k}: {v}")
 
-    # neptune
-    neptune_run = neptune.init(project="hangjoo/PSTAGE-2", api_token=neptune_config.token,)
-    neptune_run["CONFIGS"] = CONFIGS
+    # # neptune
+    # neptune_run = neptune.init(project="hangjoo/PSTAGE-2", api_token=neptune_config.token,)
+    # neptune_run["CONFIGS"] = CONFIGS
 
-    # save dir
-    save_path = os.path.join("output", neptune_run["sys/id"].fetch())
-    os.makedirs(save_path, exist_ok=True)
-    print(f"[SESSION LOG] All record results would be saved in {save_path}.")
+    # # save dir
+    # save_path = os.path.join("output", neptune_run["sys/id"].fetch())
+    # os.makedirs(save_path, exist_ok=True)
+    # print(f"[SESSION LOG] All record results would be saved in {save_path}.")
 
-    # save configs to json file
-    with open(os.path.join(save_path, "configs.json"), "w") as config_json:
-        json.dump(CONFIGS, config_json, indent=4)
+    # # save configs to json file
+    # with open(os.path.join(save_path, "configs.json"), "w") as config_json:
+    #     json.dump(CONFIGS, config_json, indent=4)
 
     # dataset
     print("[SESSION LOG] Generate training and validation data sets ... ", end="")
@@ -80,6 +80,7 @@ def train():
     print("done.")
 
     # model
+    # model = create_model(model_name=CONFIGS["MODEL"]["MODEL_NAME"]).to(device)
     model = ClassifierModel(model_type=CONFIGS["MODEL"]["MODEL_TYPE"], model_name=CONFIGS["MODEL"]["MODEL_NAME"], dropout_rate=0.2).to(device)
 
     # criterion
@@ -117,12 +118,13 @@ def train():
         iter_valid_acc = []
 
         model.train()
-        for iter_idx, (encoded, label) in enumerate(train_loader, 1):
+        for iter_idx, (encoded, e_token_ids, label) in enumerate(train_loader, 1):
             encoded = {k: v.to(device) for k, v in encoded.items()}
+            e_token_ids = {k: v.to(device) for k, v in e_token_ids.items()}
             label = label.to(device)
 
             optimizer.zero_grad()
-            outputs = model(**encoded)
+            outputs = model(e_token_ids=e_token_ids, **encoded)
             train_loss = criterion(outputs, label)
             pred_label = outputs.argmax(dim=-1)
 
@@ -138,14 +140,15 @@ def train():
                 end="\r",
             )
 
-        for iter_idx, (encoded, label) in enumerate(valid_loader, 1):
+        for iter_idx, (encoded, e_token_ids, label) in enumerate(valid_loader, 1):
             with torch.no_grad():
                 model.eval()
 
                 encoded = {k: v.to(device) for k, v in encoded.items()}
+                e_token_ids = {k: v.to(device) for k, v in e_token_ids.items()}
                 label = label.to(device)
 
-                outputs = model(**encoded)
+                outputs = model(e_token_ids=e_token_ids, **encoded)
                 valid_loss = criterion(outputs, label)
                 pred_label = outputs.argmax(dim=-1)
 
@@ -170,24 +173,24 @@ def train():
             f"[SESSION LOG]\t valid loss : {epoch_valid_loss:.4f} | valid accuracy : {epoch_valid_acc:.2f}%",
         )
 
-        best_fits = []
-        if epoch_valid_loss < best_loss:
-            torch.save(model.state_dict(), os.path.join(save_path, "best_loss_model.pth"))
-            best_loss = epoch_valid_loss
-            best_fits.append("loss")
-        if epoch_valid_acc > best_acc:
-            torch.save(model.state_dict(), os.path.join(save_path, "best_acc_model.pth"))
-            best_acc = epoch_valid_acc
-            best_fits.append("accuracy")
-        if best_fits:
-            print(f"[SESSION LOG]\t Record best validation {'/'.join(best_fits)}. Model weight file saved.")
+        # best_fits = []
+        # if epoch_valid_loss < best_loss:
+        #     torch.save(model.state_dict(), os.path.join(save_path, "best_loss_model.pth"))
+        #     best_loss = epoch_valid_loss
+        #     best_fits.append("loss")
+        # if epoch_valid_acc > best_acc:
+        #     torch.save(model.state_dict(), os.path.join(save_path, "best_acc_model.pth"))
+        #     best_acc = epoch_valid_acc
+        #     best_fits.append("accuracy")
+        # if best_fits:
+        #     print(f"[SESSION LOG]\t Record best validation {'/'.join(best_fits)}. Model weight file saved.")
 
-        neptune_run["Results/training loss"].log(value=epoch_train_loss, step=epoch_idx)
-        neptune_run["Results/training accuracy"].log(value=epoch_train_acc, step=epoch_idx)
-        neptune_run["Results/validation loss"].log(value=epoch_valid_loss, step=epoch_idx)
-        neptune_run["Results/validation accuracy"].log(value=epoch_valid_acc, step=epoch_idx)
+    #     neptune_run["Results/training loss"].log(value=epoch_train_loss, step=epoch_idx)
+    #     neptune_run["Results/training accuracy"].log(value=epoch_train_acc, step=epoch_idx)
+    #     neptune_run["Results/validation loss"].log(value=epoch_valid_loss, step=epoch_idx)
+    #     neptune_run["Results/validation accuracy"].log(value=epoch_valid_acc, step=epoch_idx)
 
-    neptune_run.stop()
+    # neptune_run.stop()
 
 
 if __name__ == "__main__":

@@ -15,8 +15,8 @@ device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
 
 
 def eval():
-    exp_name = "PST2-6"
-    weight_type = "acc"
+    exp_name = "PST2-1"
+    weight_type = "loss"
 
     save_path = os.path.join("output", exp_name)
     with open(os.path.join(save_path, "configs.json"), "r") as config_file:
@@ -45,7 +45,7 @@ def eval():
             output_pred.extend(pred_label.cpu().tolist())
 
     submission = pd.DataFrame(output_pred, columns=["pred"])
-    submission.to_csv(os.path.join(save_path, f"{exp_name}_{weight_type}_submisson.csv"), index=False)
+    submission.to_csv(os.path.join(save_path, f"{exp_name}_submisson.csv"), index=False)
 
 
 if __name__ == "__main__":
