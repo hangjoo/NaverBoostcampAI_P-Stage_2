@@ -1,0 +1,11 @@
+# files
+
+
+# dirs
+.empty/
+.neptune/
+.vscode/
+__pycache__/
+.ipynb_checkpoints/
+data/
+output/
