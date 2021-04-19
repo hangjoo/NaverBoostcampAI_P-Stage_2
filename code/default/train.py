@@ -4,6 +4,8 @@ import time
 
 import numpy as np
 import pandas as pd
+from sklearn.metrics import f1_score
+
 import torch
 from sklearn.model_selection import train_test_split
 from torch.utils.data import DataLoader
@@ -13,6 +15,7 @@ from transformers.optimization import get_cosine_schedule_with_warmup
 import neptune.new as neptune
 import neptune_config
 from dataset import BaseDataset
+# from dataset import TrainDataset
 from creators import create_criterion, create_optimizer, ClassifierModel
 from utils import fix_random_seed
 
@@ -28,11 +31,14 @@ def train():
             "MODEL_TYPE": "Electra",
             "MODEL_NAME": "monologg/koelectra-base-v3-discriminator"
         },
-        "DATA": {"DATA_VER": "train", "MAX_LEN": 288},
+        "DATA": {
+            "DATA_VER": "train",
+        },
         "SESSION": {
             "EPOCH_NUM": 10,
-            "BATCH_SIZE": 96,
-            "LEARNING_RATE": 5e-5,
+            "BATCH_SIZE": 64,
+            "LEARNING_RATE": 1e-6,
+            "INPUT_MAX_LEN": 288,
 
             "CRITERION_NAME": "LabelSmoothingLoss",
             "CRITERION_PARAMS": {},
@@ -68,12 +74,15 @@ def train():
     # dataset
     print("[SESSION LOG] Generate training and validation data sets ... ", end="")
     tokenizer = AutoTokenizer.from_pretrained(CONFIGS["MODEL"]["MODEL_NAME"])
-    tsv_path = os.path.join("data", CONFIGS["DATA"]["DATA_VER"], "train.tsv")
+    tsv_path = os.path.join("data", "train", f"{CONFIGS['DATA']['DATA_VER']}.tsv")
     data_df = pd.read_csv(tsv_path, sep="\t", header=None)
     train_df, valid_df = train_test_split(data_df, train_size=0.9)
 
-    train_set = BaseDataset(data_df=train_df, tokenizer=tokenizer, max_len=CONFIGS["DATA"]["MAX_LEN"])
-    valid_set = BaseDataset(data_df=valid_df, tokenizer=tokenizer, max_len=CONFIGS["DATA"]["MAX_LEN"])
+    train_set = BaseDataset(data_df=data_df, tokenizer=tokenizer, token_max_len=CONFIGS["SESSION"]["INPUT_MAX_LEN"])
+    valid_set = BaseDataset(data_df=valid_df, tokenizer=tokenizer, token_max_len=CONFIGS["SESSION"]["INPUT_MAX_LEN"])
+
+    # train_set = TrainDataset(data_df=train_df, tokenizer=tokenizer, token_max_len=CONFIGS["SESSION"]["INPUT_MAX_LEN"], max_label_size=250)
+    # valid_set = BaseDataset(data_df=valid_df, tokenizer=tokenizer, token_max_len=CONFIGS["SESSION"]["INPUT_MAX_LEN"])
 
     train_loader = DataLoader(train_set, batch_size=CONFIGS["SESSION"]["BATCH_SIZE"], shuffle=True, num_workers=0, drop_last=True)
     valid_loader = DataLoader(valid_set, batch_size=CONFIGS["SESSION"]["BATCH_SIZE"], shuffle=True, num_workers=0, drop_last=True)
@@ -86,7 +95,6 @@ def train():
     criterion = create_criterion(criterion_name=CONFIGS["SESSION"]["CRITERION_NAME"], **CONFIGS["SESSION"]["CRITERION_PARAMS"]).to(device)
 
     # optimizer
-    # TODO: https://huggingface.co/transformers/training.html
     no_decay = ["bias", "LayerNorm.weight"]
     optimizer_grouped_parameters = [
         {"params": [p for n, p in model.named_parameters() if not any(nd in n for nd in no_decay)], "weight_decay": 0.01},
@@ -108,13 +116,17 @@ def train():
     print("[SESSION LOG] Training Process starts ... ")
     best_loss = np.inf
     best_acc = 0
+    best_f1_score = 0
     for epoch_idx in range(1, CONFIGS["SESSION"]["EPOCH_NUM"] + 1):
         time_ckpt = time.time()
 
         iter_train_loss = []
         iter_train_acc = []
+        iter_train_f1_score = []
+
         iter_valid_loss = []
         iter_valid_acc = []
+        iter_valid_f1_score = []
 
         model.train()
         for iter_idx, (encoded, label) in enumerate(train_loader, 1):
@@ -132,6 +144,9 @@ def train():
 
             iter_train_loss.append(train_loss.item())
             iter_train_acc.extend((pred_label == label).cpu().tolist())
+
+            iter_f1_score = f1_score(y_pred=pred_label.cpu().numpy(), y_true=label.cpu().numpy(), average="macro")
+            iter_train_f1_score.append(iter_f1_score)
 
             print(
                 f"[SESSION LOG] Epoch {epoch_idx}/{CONFIGS['SESSION']['EPOCH_NUM']} - model training iteration {iter_idx}/{len(train_loader)}     ",
@@ -152,6 +167,9 @@ def train():
                 iter_valid_loss.append(valid_loss.item())
                 iter_valid_acc.extend((pred_label == label).cpu().tolist())
 
+                iter_f1_score = f1_score(y_pred=pred_label.cpu().numpy(), y_true=label.cpu().numpy(), average="macro")
+                iter_valid_f1_score.append(iter_f1_score)
+
                 print(
                     f"[SESSION LOG] Epoch {epoch_idx}/{CONFIGS['SESSION']['EPOCH_NUM']} - model validation iteration {iter_idx}/{len(valid_loader)}     ",
                     end="\r",
@@ -159,15 +177,18 @@ def train():
 
         epoch_train_loss = np.mean(iter_train_loss)
         epoch_train_acc = np.mean(iter_train_acc) * 100
+        epoch_train_f1_score = np.mean(iter_train_f1_score)
+
         epoch_valid_loss = np.mean(iter_valid_loss)
         epoch_valid_acc = np.mean(iter_valid_acc) * 100
+        epoch_valid_f1_score = np.mean(iter_valid_f1_score)
 
         time_taken = time.time() - time_ckpt
 
         print(
             f"[SESSION LOG] Epoch {epoch_idx}/{CONFIGS['SESSION']['EPOCH_NUM']} - time taken : {time_taken:.2f}sec" + " " * 20 + "\n"
-            f"[SESSION LOG]\t train loss : {epoch_train_loss:.4f} | train accuracy : {epoch_train_acc:.2f}%\n"
-            f"[SESSION LOG]\t valid loss : {epoch_valid_loss:.4f} | valid accuracy : {epoch_valid_acc:.2f}%",
+            f"[SESSION LOG]\t train loss : {epoch_train_loss:.4f} | train accuracy : {epoch_train_acc:.2f}% | train f1-score : {epoch_train_f1_score:.4f}\n"
+            f"[SESSION LOG]\t valid loss : {epoch_valid_loss:.4f} | valid accuracy : {epoch_valid_acc:.2f}% | valid f1-score : {epoch_valid_f1_score:.4f}",
         )
 
         best_fits = []
@@ -179,13 +200,20 @@ def train():
             torch.save(model.state_dict(), os.path.join(save_path, "best_acc_model.pth"))
             best_acc = epoch_valid_acc
             best_fits.append("accuracy")
+        if epoch_valid_f1_score > best_f1_score:
+            torch.save(model.state_dict(), os.path.join(save_path, "best_f1-score_model.pth"))
+            best_f1_score = epoch_valid_f1_score
+            best_fits.append("f1-score")
         if best_fits:
             print(f"[SESSION LOG]\t Record best validation {'/'.join(best_fits)}. Model weight file saved.")
 
         neptune_run["Results/training loss"].log(value=epoch_train_loss, step=epoch_idx)
         neptune_run["Results/training accuracy"].log(value=epoch_train_acc, step=epoch_idx)
+        neptune_run["Results/training f1-score"].log(value=epoch_train_f1_score, step=epoch_idx)
+
         neptune_run["Results/validation loss"].log(value=epoch_valid_loss, step=epoch_idx)
         neptune_run["Results/validation accuracy"].log(value=epoch_valid_acc, step=epoch_idx)
+        neptune_run["Results/validation f1-score"].log(value=epoch_valid_f1_score, step=epoch_idx)
 
     neptune_run.stop()
 

@@ -15,8 +15,8 @@ device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
 
 
 def eval():
-    exp_name = "PST2-6"
-    weight_type = "acc"
+    exp_name = "PST2-35"
+    weight_type = "f1-score"
 
     save_path = os.path.join("output", exp_name)
     with open(os.path.join(save_path, "configs.json"), "r") as config_file:
@@ -30,7 +30,7 @@ def eval():
     tokenizer = AutoTokenizer.from_pretrained(model_name)
     test_path = os.path.join("data", "test", "test.tsv")
     test_df = pd.read_csv(test_path, sep="\t", header=None)
-    test_set = BaseDataset(data_df=test_df, tokenizer=tokenizer, max_len=config["DATA"]["MAX_LEN"])
+    test_set = BaseDataset(data_df=test_df, tokenizer=tokenizer, token_max_len=config["SESSION"]["INPUT_MAX_LEN"])
     test_loader = DataLoader(test_set, batch_size=128, shuffle=False)
 
     output_pred = []

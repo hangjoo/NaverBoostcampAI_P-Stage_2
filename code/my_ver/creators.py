@@ -98,7 +98,7 @@ class LabelSmoothingLoss(nn.Module):
 
 
 class ClassifierModel(nn.Module):
-    def __init__(self, model_type, model_name, class_num=42, dropout_rate=None):
+    def __init__(self, model_type, model_name, class_num=42, fc_size=256, dropout_rate=None):
         super(ClassifierModel, self).__init__()
 
         model_config = getattr(import_module("transformers"), model_type + "Config").from_pretrained(model_name)
@@ -107,33 +107,40 @@ class ClassifierModel(nn.Module):
         self.backbone = getattr(import_module("transformers"), model_type + "Model").from_pretrained(model_name)
         # flatten
         self.flatten = nn.Flatten(0, -1)
-        # avg pooling
-        self.adaptive_avg_pooling = nn.AdaptiveAvgPool2d((1, model_config.hidden_size))
+        # connector
+        self.connector = nn.Linear(model_config.hidden_size, fc_size)
+        # classifier.
+        self.classifier = nn.Linear(fc_size * 3, class_num)
         # dropout
         self.dropout = nn.Dropout(p=dropout_rate) if dropout_rate else None
-        # classifier.
-        self.classifier = nn.Linear(model_config.hidden_size * 3, class_num)
+        # activation
+        self.tanh = nn.Tanh()
 
-    def forward(self, e_token_ids, **kwargs):
-        e1_token_ids = e_token_ids["e1_token_ids"]
-        e2_token_ids = e_token_ids["e2_token_ids"]
+    def forward(self, e_token_mask, **kwargs):
+        # Reference : https://github.com/monologg/R-BERT
+        e1_token_mask = e_token_mask["e1_token_mask"]
+        e2_token_mask = e_token_mask["e2_token_mask"]
 
-        if e1_token_ids is None or e2_token_ids is None:
+        if e1_token_mask is None or e2_token_mask is None:
             raise Exception("ERROR! Model must be feed e1_token_ids, e2_token_ids")
 
         outputs = self.backbone(**kwargs).last_hidden_state  # (batch_size, max_len, hidden_size)
 
-        e_outputs = []
-        for output, e1_idx, e2_idx in zip(outputs, e1_token_ids, e2_token_ids):
-            cls_output = self.adaptive_avg_pooling(output[[0], :].unsqueeze(dim=0))
-            e1_output = self.adaptive_avg_pooling(output[e1_idx, :].unsqueeze(dim=0))
-            e2_output = self.adaptive_avg_pooling(output[e2_idx, :].unsqueeze(dim=0))
-            e_outputs.append(torch.cat((cls_output, e1_output, e2_output), dim=-1).squeeze())
-        e_outputs = torch.stack(e_outputs)  # (batch_size, hidden_size * 3)
-
+        cls_output = outputs[:, 0, :]
+        e1_output = torch.sum(outputs * e1_token_mask.unsqueeze(-1), dim=1) / torch.sum(e1_token_mask, dim=1, keepdim=True)
+        e2_output = torch.sum(outputs * e2_token_mask.unsqueeze(-1), dim=1) / torch.sum(e2_token_mask, dim=1, keepdim=True)
         if self.dropout:
-            e_outputs = self.dropout(e_outputs)
+            cls_output = self.dropout(cls_output)
+            e1_output = self.dropout(e1_output)
+            e2_output = self.dropout(e2_output)
+        cls_output = self.connector(self.tanh(cls_output))
+        e1_output = self.connector(self.tanh(e1_output))
+        e2_output = self.connector(self.tanh(e2_output))
 
-        out = self.classifier(e_outputs)
+        combine_output = torch.cat([cls_output, e1_output, e2_output], dim=-1)
+        if self.dropout:
+            combine_output = self.dropout(combine_output)
+
+        out = self.classifier(combine_output)
 
         return out
