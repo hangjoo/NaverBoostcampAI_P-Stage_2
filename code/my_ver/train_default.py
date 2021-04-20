@@ -27,13 +27,17 @@ fix_random_seed()
 def main():
     # configs
     CONFIGS = {
-        "MODEL": {"MODEL_TYPE": "Electra", "MODEL_NAME": "monologg/koelectra-base-v3-discriminator"},
-        "DATA": {"DATA_VER": "train", "ENTITY_TOKEN": ["E1", "E2"]},
+        "MODEL": {
+            "ARCHITECTURE_TYPE": "default",
+            "MODEL_TYPE": "Electra",
+            "MODEL_NAME": "monologg/koelectra-base-v3-discriminator"
+        },
+        "DATA": {"DATA_VER": "train"},
         "SESSION": {
             "EPOCH_NUM": 10,
             "BATCH_SIZE": 64,
-            "BACKBONE_LEARNING_RATE": 25e-6,
-            "CLASSIFIER_LEARNING_RATE": 5e-4,
+            "BACKBONE_LEARNING_RATE": 5e-5,
+            "CLASSIFIER_LEARNING_RATE": 1e-3,
             "INPUT_MAX_LEN": 288,
             "K_FOLD_NUM": 5,
             "CRITERION_NAME": "LabelSmoothingLoss",

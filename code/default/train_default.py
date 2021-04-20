@@ -21,25 +21,36 @@ from utils import fix_random_seed, log_print, progress_sign
 os.environ["TOKENIZERS_PARALLELISM"] = "false"
 device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
 
-fix_random_seed()
+SEED = 42
+fix_random_seed(random_seed=SEED)
+
+MODEL_TYPES = ["Bert", "Electra", "XLMRoberta"]
 
 
 def main():
     # configs
     CONFIGS = {
-        "MODEL": {"MODEL_TYPE": "Electra", "MODEL_NAME": "monologg/koelectra-base-v3-discriminator"},
-        "DATA": {"DATA_VER": "train"},
+        "MODEL": {
+            "ARCHITECTURE_TYPE": "default",
+            "MODEL_TYPE": "Electra",
+            "MODEL_NAME": "monologg/koelectra-base-v3-discriminator"
+        },
+        "DATA": {
+            "DATA_VER": "train"
+        },
         "SESSION": {
             "EPOCH_NUM": 10,
             "BATCH_SIZE": 64,
-            "BACKBONE_LEARNING_RATE": 25e-6,
-            "CLASSIFIER_LEARNING_RATE": 5e-4,
-            "INPUT_MAX_LEN": 288,
-            "K_FOLD_NUM": 5,
-            "CRITERION_NAME": "LabelSmoothingLoss",
+            "BACKBONE_LEARNING_RATE": 5e-5,
+            "CLASSIFIER_LEARNING_RATE": 1e-3,
+            "INPUT_MAX_LEN": 256,
+
+            "CRITERION_NAME": "FocalLoss",
             "CRITERION_PARAMS": {},
+
             "OPTIMIZER_NAME": "AdamW",
             "OPTIMIZER_PARAMS": {},
+
             "SCHEDULER_NAME": "cosine_schedule_with_warmup",
             "SCHEDULER_PARAMS": {"WARMUP_RATIO": 0.01},
         },
@@ -107,7 +118,7 @@ def main():
     ]
     classifier_parameters = [
         {
-            "params": [p for p in model.classifier.parameters()] + [p for p in model.bn.parameters()],
+            "params": [p for p in model.classifier.parameters()],
             "weight_decay": 0.01,
             "lr": CONFIGS["SESSION"]["CLASSIFIER_LEARNING_RATE"],
         }

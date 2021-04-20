@@ -18,14 +18,14 @@ def create_model(model_name):
     if "electra" in model_name.lower():
         electra_config = ElectraConfig.from_pretrained(model_name)
         electra_config.num_labels = 42
-        model_ft = ElectraForSequenceClassification(electra_config)
+        model_ft = ElectraForSequenceClassification.from_pretrained(model_name, config=electra_config)
 
         return model_ft
 
     elif "bert" in model_name.lower():
         bert_config = BertConfig.from_pretrained(model_name)
         bert_config.num_labels = 42
-        model_ft = BertForSequenceClassification(bert_config)
+        model_ft = BertForSequenceClassification.from_pretrained(model_name, config=bert_config)
 
         return model_ft
 
@@ -105,25 +105,25 @@ class ClassifierModel(nn.Module):
         self.model_type = model_type
         # backbone.
         self.backbone = getattr(import_module("transformers"), model_type + "Model").from_pretrained(model_name)
-        # batchnorm.
-        self.bn = nn.BatchNorm1d(model_config.hidden_size)
-        # dropout.
-        self.dropout = nn.Dropout(p=dropout_rate) if dropout_rate else None
         # classifier.
-        self.classifier = nn.Linear(model_config.hidden_size, class_num)
+        self.classifier = nn.Sequential(
+            nn.BatchNorm1d(model_config.hidden_size),
+            nn.ReLU(),
+            nn.Dropout(p=dropout_rate),
+            nn.Linear(model_config.hidden_size, model_config.hidden_size),
+            nn.BatchNorm1d(model_config.hidden_size),
+            nn.ReLU(),
+            nn.Dropout(p=dropout_rate),
+            nn.Linear(model_config.hidden_size, class_num)
+        )
 
     def forward(self, *args, **kwargs):
         outputs = self.backbone(*args, **kwargs)
 
-        if self.model_type == "Bert":
+        if self.model_type in ["Bert", "XLMRoberta"]:
             cls_logits = outputs.pooler_output
-        elif self.model_type == "Electra":
+        elif self.model_type in ["Electra"]:
             cls_logits = outputs.last_hidden_state[:, 0, :]
-
-        cls_logits = self.bn(cls_logits)
-
-        if self.dropout:
-            cls_logits = self.dropout(cls_logits)
 
         out = self.classifier(cls_logits)
 
