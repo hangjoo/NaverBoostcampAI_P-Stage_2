@@ -11,11 +11,12 @@ import wandb
 import torch
 from sklearn.model_selection import KFold
 from torch.utils.data import DataLoader
+from torch.optim.lr_scheduler import ReduceLROnPlateau
+from transformers.optimization import get_cosine_schedule_with_warmup, get_cosine_with_hard_restarts_schedule_with_warmup
 from transformers import AutoTokenizer
-from transformers.optimization import get_cosine_schedule_with_warmup
 
 from dataset import BaseDataset
-from creators import ClassifierModel, create_criterion, create_optimizer
+from creators import create_model, create_criterion, create_optimizer
 from utils import fix_random_seed, log_print, progress_sign
 
 os.environ["TOKENIZERS_PARALLELISM"] = "false"
@@ -24,25 +25,41 @@ device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
 SEED = 42
 fix_random_seed(random_seed=SEED)
 
+MODEL_TYPES = ["Bert", "Electra", "XLMRoberta"]
+MODEL_NAMES = [
+    "monologg/koelectra-base-v3-discriminator",
+    "xlm-roberta-large"
+]
+
 
 def main(args_mode=False):
     # configs
     CONFIGS = {
-        "MODEL": {"ARCHITECTURE_TYPE": "default", "MODEL_TYPE": "Electra", "MODEL_NAME": "monologg/koelectra-base-v3-discriminator"},
-        "DATA": {"DATA_VER": "train"},
+        "MODEL": {
+            "ARCHITECTURE_TYPE": "default",
+            "MODEL_TYPE": "XLMRoberta",
+            "MODEL_NAME": "xlm-roberta-large"
+        },
+        "DATA": {
+            "DATA_VER": "train",
+            # "ENTITY_TOKEN": "</S>",
+        },
         "SESSION": {
             "EPOCH_NUM": 10,
-            "BATCH_SIZE": 64,
-            "BACKBONE_LEARNING_RATE": 5e-5,
-            "CLASSIFIER_LEARNING_RATE": 1e-3,
-            "INPUT_MAX_LEN": 256,
+            "BATCH_SIZE": 16,
+            "BACKBONE_LEARNING_RATE": 5e-6,
+            "CLASSIFIER_LEARNING_RATE": 5e-4,
+            "INPUT_MAX_LEN": 170,
             "K_FOLD_NUM": 5,
-            "CRITERION_NAME": "FocalLoss",
+
+            "CRITERION_NAME": "CrossEntropyError",
             "CRITERION_PARAMS": {},
-            "OPTIMIZER_NAME": "AdamW",
+
+            "OPTIMIZER_NAME": "Adam",
             "OPTIMIZER_PARAMS": {},
-            "SCHEDULER_NAME": "cosine_schedule_with_warmup",
-            "SCHEDULER_PARAMS": {"WARMUP_RATIO": 0.01},
+
+            "SCHEDULER_NAME": "ReduceLROnPlateau",
+            "SCHEDULER_PARAMS": {},
         },
     }
     for c_k, c_v in CONFIGS.items():
@@ -78,8 +95,8 @@ def main(args_mode=False):
     kf = KFold(n_splits=CONFIGS["SESSION"]["K_FOLD_NUM"], shuffle=True)
     data_loader = []
     for train_idx, valid_idx in kf.split(data_df):
-        train_set = BaseDataset(data_df=data_df.iloc[train_idx, :], tokenizer=tokenizer, token_max_len=CONFIGS["SESSION"]["INPUT_MAX_LEN"],)
-        valid_set = BaseDataset(data_df=data_df.iloc[valid_idx, :], tokenizer=tokenizer, token_max_len=CONFIGS["SESSION"]["INPUT_MAX_LEN"],)
+        train_set = BaseDataset(data_df=data_df.iloc[train_idx, :], tokenizer=tokenizer, token_max_len=CONFIGS["SESSION"]["INPUT_MAX_LEN"])
+        valid_set = BaseDataset(data_df=data_df.iloc[valid_idx, :], tokenizer=tokenizer, token_max_len=CONFIGS["SESSION"]["INPUT_MAX_LEN"])
 
         train_loader = DataLoader(train_set, batch_size=CONFIGS["SESSION"]["BATCH_SIZE"], shuffle=True, num_workers=4, drop_last=True)
         valid_loader = DataLoader(valid_set, batch_size=CONFIGS["SESSION"]["BATCH_SIZE"], shuffle=True, num_workers=4, drop_last=True)
@@ -100,10 +117,12 @@ def main(args_mode=False):
     }
     for fold_idx in range(CONFIGS["SESSION"]["K_FOLD_NUM"]):
         # model
-        model = ClassifierModel(model_type=CONFIGS["MODEL"]["MODEL_TYPE"], model_name=CONFIGS["MODEL"]["MODEL_NAME"], dropout_rate=0.2).to(device)
+        model = create_model(model_type=CONFIGS["MODEL"]["MODEL_TYPE"], model_name=CONFIGS["MODEL"]["MODEL_NAME"], dropout_rate=0.2).to(device)
 
         # criterion
         criterion = create_criterion(criterion_name=CONFIGS["SESSION"]["CRITERION_NAME"], **CONFIGS["SESSION"]["CRITERION_PARAMS"]).to(device)
+
+        wandb.watch(models=model, criterion=criterion, log="all", idx=fold_idx)
 
         # optimizer
         no_decay = ["bias", "LayerNorm.weight"]
@@ -133,9 +152,10 @@ def main(args_mode=False):
         )
 
         # scheduler
-        t_total = len(train_loader) * CONFIGS["SESSION"]["EPOCH_NUM"]
-        warmup_step = int(t_total * CONFIGS["SESSION"]["SCHEDULER_PARAMS"]["WARMUP_RATIO"])
-        scheduler = get_cosine_schedule_with_warmup(optimizer, num_warmup_steps=warmup_step, num_training_steps=t_total)
+        # t_total = len(train_loader) * CONFIGS["SESSION"]["EPOCH_NUM"]
+        # warmup_step = int(t_total * CONFIGS["SESSION"]["SCHEDULER_PARAMS"]["WARMUP_RATIO"])
+        # scheduler = get_cosine_schedule_with_warmup(optimizer, num_warmup_steps=warmup_step, num_training_steps=t_total)
+        scheduler = ReduceLROnPlateau(optimizer, mode="min", patience=2)
 
         # train session
         epoch_history = {
@@ -170,14 +190,14 @@ def main(args_mode=False):
                 best_f1_score = result["valid_f1_score"]
                 best_fits.append("f1-score")
             if best_fits:
-                log_print(f"\t| -> 🚀 Record best validation {'/'.join(best_fits)} 🚀")
-            torch.save(model_state, os.path.join(save_path, f"{fold_idx}_fold_model.pth"))
+                print(f"\t| -> 🚀 Record best validation {'/'.join(best_fits)} 🚀")
+            torch.save(model_state, os.path.join(save_path, f"epoch-{epoch_idx}_fold-{fold_idx}_model.pth"))
 
             for k, v in result.items():
                 epoch_history[k].append(v)
 
             for k, v in result.items():
-                wandb.log({f"{fold_idx}-fold {k}": v})
+                wandb.log({f"{fold_idx}-fold {k}": v, "epoch_idx": epoch_idx})
 
         for k, v in epoch_history.items():
             avg_result[k].append(v)
@@ -193,7 +213,7 @@ def main(args_mode=False):
         )
 
         for k, v in avg_result.items():
-            wandb.log({f"All Fold Average {k}": v[epoch_idx]})
+            wandb.log({f"All Fold Average {k}": v[epoch_idx], "epoch_idx": epoch_idx})
 
 
 def train(model, criterion, optimizer, scheduler, data_loader):
@@ -223,7 +243,6 @@ def train(model, criterion, optimizer, scheduler, data_loader):
 
         train_loss.backward()
         optimizer.step()
-        scheduler.step()
 
         iter_train_loss.append(train_loss.item())
         iter_train_acc.extend((pred_label == label).cpu().tolist())
@@ -259,6 +278,7 @@ def train(model, criterion, optimizer, scheduler, data_loader):
     epoch_valid_acc = np.mean(iter_valid_acc) * 100
     epoch_valid_f1_score = np.mean(iter_valid_f1_score)
 
+    scheduler.step(epoch_valid_loss)
     time_taken = time.time() - time_ckpt
 
     result = {

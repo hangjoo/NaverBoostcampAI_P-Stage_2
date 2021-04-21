@@ -98,13 +98,15 @@ class LabelSmoothingLoss(nn.Module):
 
 
 class ClassifierModel(nn.Module):
-    def __init__(self, model_type, model_name, class_num=42, fc_size=256, dropout_rate=None):
+    def __init__(self, model_type, model_name, class_num=42, fc_size=256, dropout_rate=None, embedding_size=None):
         super(ClassifierModel, self).__init__()
 
         model_config = getattr(import_module("transformers"), model_type + "Config").from_pretrained(model_name)
         self.model_type = model_type
         # backbone.
         self.backbone = getattr(import_module("transformers"), model_type + "Model").from_pretrained(model_name)
+        if embedding_size is not None:
+            self.backbone.resize_token_embeddings(embedding_size)
         # flatten
         self.flatten = nn.Flatten(0, -1)
         # connector

@@ -28,7 +28,7 @@ def main():
     # configs
     CONFIGS = {
         "MODEL": {
-            "ARCHITECTURE_TYPE": "default",
+            "ARCHITECTURE_TYPE": "my_ver",
             "MODEL_TYPE": "Electra",
             "MODEL_NAME": "monologg/koelectra-base-v3-discriminator"
         },
@@ -94,8 +94,7 @@ def main():
     print("done.")
 
     # model
-    model = ClassifierModel(model_type=CONFIGS["MODEL"]["MODEL_TYPE"], model_name=CONFIGS["MODEL"]["MODEL_NAME"], dropout_rate=0.2).to(device)
-    model.backbone.resize_token_embeddings(len(train_set.tokenizer))
+    model = ClassifierModel(model_type=CONFIGS["MODEL"]["MODEL_TYPE"], model_name=CONFIGS["MODEL"]["MODEL_NAME"], dropout_rate=0.2, embedding_size=len(train_set.tokenizer)).to(device)
 
     # criterion
     criterion = create_criterion(criterion_name=CONFIGS["SESSION"]["CRITERION_NAME"], **CONFIGS["SESSION"]["CRITERION_PARAMS"]).to(device)

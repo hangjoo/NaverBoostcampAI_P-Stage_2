@@ -16,8 +16,8 @@ device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
 
 
 def eval():
-    exp_name = "PSTAGE2-k_fold-1"
-    weight_type = "f1-score"
+    exp_name = "PSTAGE2-k_fold-0"
+    epoch_idx = "7"
 
     save_path = os.path.join("output", exp_name)
     with open(os.path.join(save_path, "configs.json"), "r") as config_file:
@@ -37,7 +37,7 @@ def eval():
         if fold_idx == 1:
             continue
         model = ClassifierModel(model_type=config["MODEL"]["MODEL_TYPE"], model_name=config["MODEL"]["MODEL_NAME"], dropout_rate=0.2).to(device)
-        model.load_state_dict(torch.load(os.path.join(save_path, f"best_{weight_type}_{fold_idx}_fold_model.pth")))
+        model.load_state_dict(torch.load(os.path.join(save_path, f"epoch-{epoch_idx}_fold-{fold_idx}_model.pth")))
         model.eval()
 
         fold_logits = []
@@ -57,7 +57,7 @@ def eval():
     output_pred = np.argmax(output_logits, axis=-1)
 
     submission = pd.DataFrame(output_pred, columns=["pred"])
-    submission.to_csv(os.path.join(save_path, f"{exp_name}_{weight_type}_submisson.csv"), index=False)
+    submission.to_csv(os.path.join(save_path, f"{exp_name}_epoch-{epoch_idx}_submisson.csv"), index=False)
 
 
 if __name__ == "__main__":

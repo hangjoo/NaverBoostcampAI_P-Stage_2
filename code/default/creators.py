@@ -1,4 +1,3 @@
-
 from importlib import import_module
 
 import torch
@@ -10,24 +9,23 @@ from madgrad import MADGRAD
 from adamp import AdamP, SGDP
 from transformers import AdamW
 
-from transformers import ElectraConfig, ElectraForSequenceClassification
-from transformers import BertConfig, BertForSequenceClassification
 
+def create_model(*args, **kwargs):
+    model_type = kwargs.get("model_type", None)
+    if model_type is None:
+        raise Exception("create_model must have model_name argument.")
 
-def create_model(model_name):
-    if "electra" in model_name.lower():
-        electra_config = ElectraConfig.from_pretrained(model_name)
-        electra_config.num_labels = 42
-        model_ft = ElectraForSequenceClassification.from_pretrained(model_name, config=electra_config)
-
+    if model_type == "Bert":
+        model_ft = BertClassifierModel(*args, **kwargs)
         return model_ft
-
-    elif "bert" in model_name.lower():
-        bert_config = BertConfig.from_pretrained(model_name)
-        bert_config.num_labels = 42
-        model_ft = BertForSequenceClassification.from_pretrained(model_name, config=bert_config)
-
+    if model_type == "Electra":
+        model_ft = ElectraClassifierModel(*args, **kwargs)
         return model_ft
+    if model_type == "XLMRoberta":
+        model_ft = XLMRobertaClassifierModel(*args, **kwargs)
+        return model_ft
+    else:
+        raise Exception(f"{model_type} does not exist.")
 
 
 def create_criterion(criterion_name, *args, **kwargs):
@@ -97,14 +95,46 @@ class LabelSmoothingLoss(nn.Module):
         return torch.mean(torch.sum(-true_dist * pred, dim=self.dim))
 
 
-class ClassifierModel(nn.Module):
-    def __init__(self, model_type, model_name, class_num=42, dropout_rate=None):
-        super(ClassifierModel, self).__init__()
+class BertClassifierModel(nn.Module):
+    def __init__(self, model_type, model_name, class_num=42, dropout_rate=0.2, embedding_size=None):
+        super(BertClassifierModel, self).__init__()
 
         model_config = getattr(import_module("transformers"), model_type + "Config").from_pretrained(model_name)
         self.model_type = model_type
         # backbone.
         self.backbone = getattr(import_module("transformers"), model_type + "Model").from_pretrained(model_name)
+        if embedding_size is not None:
+            self.backbone.resize_token_embeddings(embedding_size)
+        # classifier.
+        self.classifier = nn.Sequential(
+            nn.Dropout(p=dropout_rate),
+            nn.Linear(model_config.hidden_size, model_config.hidden_size),
+            nn.BatchNorm1d(model_config.hidden_size),
+            nn.ReLU(),
+            nn.Dropout(p=dropout_rate),
+            nn.Linear(model_config.hidden_size, class_num)
+        )
+
+    def forward(self, *args, **kwargs):
+        outputs = self.backbone(*args, **kwargs)
+
+        cls_logits = outputs.pooler_output
+
+        out = self.classifier(cls_logits)
+
+        return out
+
+
+class ElectraClassifierModel(nn.Module):
+    def __init__(self, model_type, model_name, class_num=42, dropout_rate=0.2, embedding_size=None):
+        super(ElectraClassifierModel, self).__init__()
+
+        model_config = getattr(import_module("transformers"), model_type + "Config").from_pretrained(model_name)
+        self.model_type = model_type
+        # backbone.
+        self.backbone = getattr(import_module("transformers"), model_type + "Model").from_pretrained(model_name)
+        if embedding_size is not None:
+            self.backbone.resize_token_embeddings(embedding_size)
         # classifier.
         self.classifier = nn.Sequential(
             nn.BatchNorm1d(model_config.hidden_size),
@@ -120,10 +150,33 @@ class ClassifierModel(nn.Module):
     def forward(self, *args, **kwargs):
         outputs = self.backbone(*args, **kwargs)
 
-        if self.model_type in ["Bert", "XLMRoberta"]:
-            cls_logits = outputs.pooler_output
-        elif self.model_type in ["Electra"]:
-            cls_logits = outputs.last_hidden_state[:, 0, :]
+        cls_logits = outputs.last_hidden_state[:, 0, :]
+
+        out = self.classifier(cls_logits)
+
+        return out
+
+
+class XLMRobertaClassifierModel(nn.Module):
+    def __init__(self, model_type, model_name, class_num=42, dropout_rate=0.2, embedding_size=None):
+        super(XLMRobertaClassifierModel, self).__init__()
+
+        model_config = getattr(import_module("transformers"), model_type + "Config").from_pretrained(model_name)
+        self.model_type = model_type
+        # backbone.
+        self.backbone = getattr(import_module("transformers"), model_type + "Model").from_pretrained(model_name)
+        if embedding_size is not None:
+            self.backbone.resize_token_embeddings(embedding_size)
+        # classifier.
+        self.classifier = nn.Sequential(
+            nn.Dropout(p=dropout_rate),
+            nn.Linear(model_config.hidden_size, class_num)
+        )
+
+    def forward(self, *args, **kwargs):
+        outputs = self.backbone(*args, **kwargs)
+
+        cls_logits = outputs.pooler_output
 
         out = self.classifier(cls_logits)
 

@@ -11,11 +11,12 @@ import wandb
 import torch
 from sklearn.model_selection import train_test_split
 from torch.utils.data import DataLoader
-from transformers import AutoTokenizer
+from torch.optim.lr_scheduler import ReduceLROnPlateau
 from transformers.optimization import get_cosine_schedule_with_warmup
+from transformers import AutoTokenizer
 
 from dataset import BaseDataset
-from creators import ClassifierModel, create_criterion, create_optimizer
+from creators import create_model, create_criterion, create_optimizer
 from utils import fix_random_seed, log_print, progress_sign
 
 os.environ["TOKENIZERS_PARALLELISM"] = "false"
@@ -25,6 +26,10 @@ SEED = 42
 fix_random_seed(random_seed=SEED)
 
 MODEL_TYPES = ["Bert", "Electra", "XLMRoberta"]
+MODEL_NAMES = [
+    "monologg/koelectra-base-v3-discriminator",
+    "xlm-roberta-large"
+]
 
 
 def main():
@@ -32,27 +37,28 @@ def main():
     CONFIGS = {
         "MODEL": {
             "ARCHITECTURE_TYPE": "default",
-            "MODEL_TYPE": "Electra",
-            "MODEL_NAME": "monologg/koelectra-base-v3-discriminator"
+            "MODEL_TYPE": "XLMRoberta",
+            "MODEL_NAME": "xlm-roberta-large"
         },
         "DATA": {
-            "DATA_VER": "train"
+            "DATA_VER": "train",
+            # "ENTITY_TOKEN": "</s>",
         },
         "SESSION": {
             "EPOCH_NUM": 10,
-            "BATCH_SIZE": 64,
-            "BACKBONE_LEARNING_RATE": 5e-5,
-            "CLASSIFIER_LEARNING_RATE": 1e-3,
-            "INPUT_MAX_LEN": 256,
+            "BATCH_SIZE": 32,
+            "BACKBONE_LEARNING_RATE": 5e-6,
+            "CLASSIFIER_LEARNING_RATE": 5e-4,
+            "INPUT_MAX_LEN": 170,
 
-            "CRITERION_NAME": "FocalLoss",
+            "CRITERION_NAME": "LabelSmoothingLoss",
             "CRITERION_PARAMS": {},
 
             "OPTIMIZER_NAME": "AdamW",
             "OPTIMIZER_PARAMS": {},
 
-            "SCHEDULER_NAME": "cosine_schedule_with_warmup",
-            "SCHEDULER_PARAMS": {"WARMUP_RATIO": 0.01},
+            "SCHEDULER_NAME": "ReduceLROnPlateau",
+            "SCHEDULER_PARAMS": {},
         },
     }
     for c_k, c_v in CONFIGS.items():
@@ -87,17 +93,20 @@ def main():
     data_df = pd.read_csv(tsv_path, sep="\t", header=None)
     train_df, valid_df = train_test_split(data_df, train_size=0.9, shuffle=True)
 
+    # train_set = BaseDataset(data_df=train_df, tokenizer=tokenizer, token_max_len=CONFIGS["SESSION"]["INPUT_MAX_LEN"], e_token=CONFIGS["DATA"]["ENTITY_TOKEN"])
+    # valid_set = BaseDataset(data_df=valid_df, tokenizer=tokenizer, token_max_len=CONFIGS["SESSION"]["INPUT_MAX_LEN"], e_token=CONFIGS["DATA"]["ENTITY_TOKEN"])
     train_set = BaseDataset(data_df=train_df, tokenizer=tokenizer, token_max_len=CONFIGS["SESSION"]["INPUT_MAX_LEN"])
     valid_set = BaseDataset(data_df=valid_df, tokenizer=tokenizer, token_max_len=CONFIGS["SESSION"]["INPUT_MAX_LEN"])
 
-    train_loader = DataLoader(train_set, batch_size=CONFIGS["SESSION"]["BATCH_SIZE"], shuffle=True, num_workers=4, drop_last=True)
-    valid_loader = DataLoader(valid_set, batch_size=CONFIGS["SESSION"]["BATCH_SIZE"], shuffle=True, num_workers=4, drop_last=True)
+    train_loader = DataLoader(train_set, batch_size=CONFIGS["SESSION"]["BATCH_SIZE"], shuffle=True, num_workers=4, drop_last=False)
+    valid_loader = DataLoader(valid_set, batch_size=CONFIGS["SESSION"]["BATCH_SIZE"], shuffle=True, num_workers=4, drop_last=False)
 
     data_loader = {"train": train_loader, "valid": valid_loader}
     print("done.")
 
     # model
-    model = ClassifierModel(model_type=CONFIGS["MODEL"]["MODEL_TYPE"], model_name=CONFIGS["MODEL"]["MODEL_NAME"], dropout_rate=0.2).to(device)
+    # model = create_model(model_type=CONFIGS["MODEL"]["MODEL_TYPE"], model_name=CONFIGS["MODEL"]["MODEL_NAME"], dropout_rate=0.2, embedding_size=len(train_set.tokenizer)).to(device)
+    model = create_model(model_type=CONFIGS["MODEL"]["MODEL_TYPE"], model_name=CONFIGS["MODEL"]["MODEL_NAME"], dropout_rate=0.2).to(device)
 
     # criterion
     criterion = create_criterion(criterion_name=CONFIGS["SESSION"]["CRITERION_NAME"], **CONFIGS["SESSION"]["CRITERION_PARAMS"]).to(device)
@@ -128,9 +137,10 @@ def main():
     )
 
     # scheduler
-    t_total = len(train_loader) * CONFIGS["SESSION"]["EPOCH_NUM"]
-    warmup_step = int(t_total * CONFIGS["SESSION"]["SCHEDULER_PARAMS"]["WARMUP_RATIO"])
-    scheduler = get_cosine_schedule_with_warmup(optimizer, num_warmup_steps=warmup_step, num_training_steps=t_total)
+    # t_total = len(train_loader) * CONFIGS["SESSION"]["EPOCH_NUM"]
+    # warmup_step = int(t_total * CONFIGS["SESSION"]["SCHEDULER_PARAMS"]["WARMUP_RATIO"])
+    # scheduler = get_cosine_schedule_with_warmup(optimizer, num_warmup_steps=warmup_step, num_training_steps=t_total)
+    scheduler = ReduceLROnPlateau(optimizer, mode="min", patience=2)
 
     # training session
     log_print("Training Process starts ... ")
@@ -193,7 +203,6 @@ def train(model, criterion, optimizer, scheduler, data_loader):
 
         train_loss.backward()
         optimizer.step()
-        scheduler.step()
 
         iter_train_loss.append(train_loss.item())
         iter_train_acc.extend((pred_label == label).cpu().tolist())
@@ -219,7 +228,7 @@ def train(model, criterion, optimizer, scheduler, data_loader):
             iter_f1_score = f1_score(y_pred=pred_label.cpu().numpy(), y_true=label.cpu().numpy(), average="macro")
             iter_valid_f1_score.append(iter_f1_score)
 
-            log_print(f"train iteration {progress_sign[iter_idx % 4]} {iter_idx}/{len(valid_loader)}" + " " * 10, end="\r")
+            log_print(f"valid iteration {progress_sign[iter_idx % 4]} {iter_idx}/{len(valid_loader)}" + " " * 10, end="\r")
 
     epoch_train_loss = np.mean(iter_train_loss)
     epoch_train_acc = np.mean(iter_train_acc) * 100
@@ -229,6 +238,7 @@ def train(model, criterion, optimizer, scheduler, data_loader):
     epoch_valid_acc = np.mean(iter_valid_acc) * 100
     epoch_valid_f1_score = np.mean(iter_valid_f1_score)
 
+    scheduler.step(epoch_valid_loss)
     time_taken = time.time() - time_ckpt
 
     result = {

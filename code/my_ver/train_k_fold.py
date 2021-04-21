@@ -12,7 +12,7 @@ import torch
 from sklearn.model_selection import KFold
 from torch.utils.data import DataLoader
 from transformers import AutoTokenizer
-from transformers.optimization import get_cosine_schedule_with_warmup
+from transformers.optimization import get_cosine_schedule_with_warmup, get_cosine_with_hard_restarts_schedule_with_warmup
 
 from dataset import BaseDataset
 from creators import ClassifierModel, create_criterion, create_optimizer
@@ -21,25 +21,42 @@ from utils import fix_random_seed, log_print, progress_sign
 os.environ["TOKENIZERS_PARALLELISM"] = "false"
 device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
 
-fix_random_seed()
+SEED = 42
+fix_random_seed(random_seed=SEED)
+
+MODEL_TYPES = ["Bert", "Electra", "XLMRoberta"]
+MODEL_NAMES = [
+    "monologg/koelectra-base-v3-discriminator",
+    "xlm-roberta-large"
+]
 
 
 def main(args_mode=False):
     # configs
     CONFIGS = {
-        "MODEL": {"MODEL_TYPE": "Electra", "MODEL_NAME": "monologg/koelectra-base-v3-discriminator"},
-        "DATA": {"DATA_VER": "train", "ENTITY_TOKEN": ["E1", "E2"]},
+        "MODEL": {
+            "ARCHITECTURE_TYPE": "my_ver",
+            "MODEL_TYPE": "Electra",
+            "MODEL_NAME": "monologg/koelectra-base-v3-discriminator"
+        },
+        "DATA": {
+            "DATA_VER": "train",
+            "ENTITY_TOKEN": ["E1", "E2"],
+        },
         "SESSION": {
             "EPOCH_NUM": 10,
-            "BATCH_SIZE": 64,
-            "BACKBONE_LEARNING_RATE": 5e-5,
-            "CLASSIFIER_LEARNING_RATE": 1e-3,
-            "INPUT_MAX_LEN": 288,
+            "BATCH_SIZE": 16,
+            "BACKBONE_LEARNING_RATE": 2e-5,
+            "CLASSIFIER_LEARNING_RATE": 2e-5,
+            "INPUT_MAX_LEN": 256,
             "K_FOLD_NUM": 5,
-            "CRITERION_NAME": "LabelSmoothingLoss",
+
+            "CRITERION_NAME": "CrossEntropyError",
             "CRITERION_PARAMS": {},
-            "OPTIMIZER_NAME": "AdamW",
+
+            "OPTIMIZER_NAME": "Adam",
             "OPTIMIZER_PARAMS": {},
+
             "SCHEDULER_NAME": "cosine_schedule_with_warmup",
             "SCHEDULER_PARAMS": {"WARMUP_RATIO": 0.01},
         },
@@ -77,18 +94,8 @@ def main(args_mode=False):
     kf = KFold(n_splits=CONFIGS["SESSION"]["K_FOLD_NUM"], shuffle=True)
     data_loader = []
     for train_idx, valid_idx in kf.split(data_df):
-        train_set = BaseDataset(
-            data_df=data_df.iloc[train_idx, :],
-            tokenizer=tokenizer,
-            token_max_len=CONFIGS["SESSION"]["INPUT_MAX_LEN"],
-            e_tokens=CONFIGS["DATA"]["ENTITY_TOKEN"],
-        )
-        valid_set = BaseDataset(
-            data_df=data_df.iloc[valid_idx, :],
-            tokenizer=tokenizer,
-            token_max_len=CONFIGS["SESSION"]["INPUT_MAX_LEN"],
-            e_tokens=CONFIGS["DATA"]["ENTITY_TOKEN"],
-        )
+        train_set = BaseDataset(data_df=data_df.iloc[train_idx, :], tokenizer=tokenizer, token_max_len=CONFIGS["SESSION"]["INPUT_MAX_LEN"], e_tokens=CONFIGS["DATA"]["ENTITY_TOKEN"])
+        valid_set = BaseDataset(data_df=data_df.iloc[valid_idx, :], tokenizer=tokenizer, token_max_len=CONFIGS["SESSION"]["INPUT_MAX_LEN"], e_tokens=CONFIGS["DATA"]["ENTITY_TOKEN"])
 
         train_loader = DataLoader(train_set, batch_size=CONFIGS["SESSION"]["BATCH_SIZE"], shuffle=True, num_workers=4, drop_last=True)
         valid_loader = DataLoader(valid_set, batch_size=CONFIGS["SESSION"]["BATCH_SIZE"], shuffle=True, num_workers=4, drop_last=True)
@@ -99,18 +106,17 @@ def main(args_mode=False):
     # training session
     log_print("Training Process starts ... ")
     avg_result = {
-        "Average_train_loss": [],
-        "Average_train_acc": [],
-        "Average_train_f1_score": [],
-        "Average_valid_loss": [],
-        "Average_valid_acc": [],
-        "Average_valid_f1_score": [],
-        "Average_time_taken": [],
+        "train_loss": [],
+        "train_acc": [],
+        "train_f1_score": [],
+        "valid_loss": [],
+        "valid_acc": [],
+        "valid_f1_score": [],
+        "time_taken": [],
     }
     for fold_idx in range(CONFIGS["SESSION"]["K_FOLD_NUM"]):
         # model
-        model = ClassifierModel(model_type=CONFIGS["MODEL"]["MODEL_TYPE"], model_name=CONFIGS["MODEL"]["MODEL_NAME"], dropout_rate=0.2).to(device)
-        model.backbone.resize_token_embeddings(len(train_set.tokenizer))
+        model = ClassifierModel(model_type=CONFIGS["MODEL"]["MODEL_TYPE"], model_name=CONFIGS["MODEL"]["MODEL_NAME"], dropout_rate=0.1, embedding_size=len(train_set.tokenizer)).to(device)
 
         # criterion
         criterion = create_criterion(criterion_name=CONFIGS["SESSION"]["CRITERION_NAME"], **CONFIGS["SESSION"]["CRITERION_PARAMS"]).to(device)
@@ -147,6 +153,17 @@ def main(args_mode=False):
         warmup_step = int(t_total * CONFIGS["SESSION"]["SCHEDULER_PARAMS"]["WARMUP_RATIO"])
         scheduler = get_cosine_schedule_with_warmup(optimizer, num_warmup_steps=warmup_step, num_training_steps=t_total)
 
+        # train session
+        epoch_history = {
+            "train_loss": [],
+            "train_acc": [],
+            "train_f1_score": [],
+            "valid_loss": [],
+            "valid_acc": [],
+            "valid_f1_score": [],
+            "time_taken": [],
+        }
+
         best_loss = np.inf
         best_acc = 0
         best_f1_score = 0
@@ -160,37 +177,39 @@ def main(args_mode=False):
             )
             best_fits = []
             if result["valid_loss"] < best_loss:
-                torch.save(model_state, os.path.join(save_path, f"best_loss_{fold_idx}_fold_model.pth"))
                 best_loss = result["valid_loss"]
                 best_fits.append("loss")
             if result["valid_acc"] > best_acc:
-                torch.save(model_state, os.path.join(save_path, f"best_acc_{fold_idx}_fold_model.pth"))
                 best_acc = result["valid_acc"]
                 best_fits.append("accuracy")
             if result["valid_f1_score"] > best_f1_score:
-                torch.save(model_state, os.path.join(save_path, f"best_f1-score_{fold_idx}_fold_model.pth"))
                 best_f1_score = result["valid_f1_score"]
                 best_fits.append("f1-score")
             if best_fits:
-                log_print(f"\t-> 🚀 Record best validation {'/'.join(best_fits)} 🚀 Model weight file saved.")
+                print(f"\t| -> 🚀 Record best validation {'/'.join(best_fits)} 🚀")
+            torch.save(model_state, os.path.join(save_path, f"epoch-{epoch_idx}_fold-{fold_idx}_model.pth"))
 
             for k, v in result.items():
-                avg_result[f"Average_{k}"].append(v)
+                epoch_history[k].append(v)
 
             for k, v in result.items():
-                wandb.log({f"{fold_idx}-fold {k}": v})
+                wandb.log({f"{fold_idx}-fold {k}": v, "epoch_idx": epoch_idx})
+
+        for k, v in epoch_history.items():
+            avg_result[k].append(v)
 
     for k, v in avg_result.items():
-        avg_result[k] = np.mean(v)
+        avg_result[k] = np.mean(v, axis=0)
 
-    log_print(
-        f"** ⭐️ Average All Fold ⭐️ ** - time taken : {avg_result['Average_time_taken']:.2f}\n"
-        f"\t| train loss : {avg_result['Average_train_loss']:.4f} | train accuracy : {avg_result['Average_train_acc']:.2f} | train f1-score : {avg_result['Average_train_f1_score']:.4f} |\n"
-        f"\t| valid loss : {avg_result['Average_valid_loss']:.4f} | valid accuracy : {avg_result['Average_valid_acc']:.2f} | valid f1-score : {avg_result['Average_valid_f1_score']:.4f} |"
-    )
+    for epoch_idx in range(CONFIGS["SESSION"]["EPOCH_NUM"]):
+        log_print(
+            f"Epoch {epoch_idx}/{CONFIGS['SESSION']['EPOCH_NUM']} - ** ⭐️ Average All Fold ⭐️ ** - time taken : {avg_result['time_taken'][epoch_idx]:.2f}\n\n"
+            f"\t| train loss : {avg_result['train_loss'][epoch_idx]:.4f} | train accuracy : {avg_result['train_acc'][epoch_idx]:.2f}% | train f1-score : {avg_result['train_f1_score'][epoch_idx]:.4f} |\n"
+            f"\t| valid loss : {avg_result['valid_loss'][epoch_idx]:.4f} | valid accuracy : {avg_result['valid_acc'][epoch_idx]:.2f}% | valid f1-score : {avg_result['valid_f1_score'][epoch_idx]:.4f} |"
+        )
 
-    for k, v in avg_result.items():
-        wandb.log({k: v})
+        for k, v in avg_result.items():
+            wandb.log({f"All Fold Average {k}": v[epoch_idx], "epoch_idx": epoch_idx})
 
 
 def train(model, criterion, optimizer, scheduler, data_loader):
