@@ -1,6 +1,8 @@
-# Naver Boostcamp AI Tect - P Stage 2 - Relation Extraction
+# Naver Boostcamp AI Tech - P Stage 2
 
 ## 개요
+
+### Relation Extraction
 
 문장과 문장 내 개체1의 인덱스, 개체명과 개체2의 인덱스, 개체명이 주어질 때 개체1과 개체2의 관계를 예측하는 문제입니다.
 
